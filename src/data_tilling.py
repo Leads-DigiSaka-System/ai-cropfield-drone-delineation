@@ -17,10 +17,10 @@ from shapely.geometry import Polygon, MultiPolygon, box, shape
 def chunk_with_normalization(
     image_path,
     output_dir,
-    tile_size=256,
-    overlap=10,
+    tile_size=640,
+    overlap=32,
     bands=[1, 2, 3],
-    img_format="jpg",
+    img_format="png",
     normalization_method="minmax"
 ):
     """
@@ -233,11 +233,11 @@ def chunk_preserve_data(
 if __name__ == "__main__":
     # Method 1: Normalize to handle negative values
     chunk_with_normalization(
-        image_path="/content/drive/MyDrive/AGRI/Segment/patches/ne02_patch.tif",
-        output_dir="/content/drive/MyDrive/AGRI/Segment/YOLOv12/test/patches",
-        tile_size=256,
-        overlap=10,
+        image_path="D:/Work/LeadsAgri/CropFieldSeg/ortho_isabela_field.tif",
+        output_dir="D:/Work/LeadsAgri/CropFieldSeg/data_v2",
+        tile_size=1280,
+        overlap=128,
         bands=[1, 2, 3],
-        img_format="jpg",  # PNG handles the conversion better than JPG
+        img_format="png",  # PNG handles the conversion better than JPG
         normalization_method="minmax"  # or "percentile" for robust normalization
     )

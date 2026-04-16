@@ -1,0 +1,10 @@
+{
+  "model": "FracTAL ResUNet",
+  "total_fields": 34,
+  "avg_boundary_conf": 0.04326379175900536,
+  "min_boundary_conf": 0.008384733460843563,
+  "max_boundary_conf": 0.198165625333786,
+  "avg_area_px": 13569.823529411764,
+  "median_area_px": 7397.25,
+  "processing_time_min": 0.05
+}

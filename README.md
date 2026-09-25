@@ -1,6 +1,6 @@
 # Crop Field Segmentation from Drone Imagery
 
-A deep learning pipeline for segmenting and delineating crop fields from aerial/drone imagery using three state-of-the-art architectures: YOLO11n segmentation, FracTAL ResUNet, and SAM-FracTAL ResUNet.
+A deep learning pipeline for segmenting and delineating crop fields from aerial/drone imagery using four architectures: YOLO11n segmentation, FracTAL ResUNet, SAM-FracTAL ResUNet and DINO-FracTAL ResUNet.
 
 ## Overview
 
@@ -21,9 +21,12 @@ This project provides tools to:
 │   ├── FractalResUNET/
 │   │   ├── Module01_ModelTraining-FractalResUNET.ipynb  # FracTAL ResUNet training
 │   │   └── Module02_ModelInference-FractalResUNET.ipynb # Tiled inference pipeline
-│   └── SAM-FractalResUNET/
-│       ├── Module01_ModelTraining-SAMFractalResUNET.ipynb  # SAM-FracTAL training
-│       └── Module02_ModelInference-SAMFractalResUNET.ipynb # SAM-FracTAL inference
+│   ├── SAM-FractalResUNET/
+│   │   ├── Module01_ModelTraining-SAMFractalResUNET.ipynb  # SAM-FracTAL training
+│   │   └── Module02_ModelInference-SAMFractalResUNET.ipynb # SAM-FracTAL inference
+│   └── DINO-FractalResUNET/
+│       ├── Module01_ModelTraining-DINOFractalResUNET.ipynb  # DINOv3/DINOv2-FracTAL training
+│       └── Module02_ModelInference-DINOFractalResUNET.ipynb # DINOv3/DINOv2-FracTAL inference
 ├── src/
 │   └── data_tilling.py       # Raster image tiling utility
 ├── models/
@@ -62,11 +65,45 @@ This project provides tools to:
 - **Strengths**: Excellent boundary precision, handles field merging prevention
 
 ### 3. SAM-FracTAL ResUNet
-- **Architecture**: Hybrid model combining SAM ViT-B encoder with FracTAL decoder
-- **Frozen Components**: SAM ViT-B image encoder (89M params, frozen)
-- **Trainable Components**: FracTAL decoder + SAMFusion cross-attention (~22M params)
-- **SAMFusion**: Cross-attention module that injects SAM semantic features into FracTAL bottleneck via a learned residual gate (α)
-- **Strengths**: Rich semantic features from SAM improve boundary detection in complex scenes
+- **Architecture**: FracTAL ResUNet with a frozen SAM ViT-B image encoder (89M params)
+- **Fusion**: `GatedFusion` at three U-Net levels (enc3 skip at 64×64, enc4 skip and bottleneck at 32×32).
+  SAM features are projected, resized to the level's grid and added through a learned per-pixel gate:
+  `out = x + γ · gate(x, e) · e`. γ starts at 0.5, trains at the normal learning rate and has no weight decay.
+- **Trainable**: FracTAL + fusion modules; checkpoints exclude the SAM weights
+
+> **Why the fusion was rebuilt (v03):** in the previous version (cross-attention at the bottleneck only),
+> the SAM gate ended training at tanh(α) = 0.012, so SAM was effectively unused. The gate trained at a
+> learning rate of 1e-5 with weight decay, so it could not move more than ~0.03. The attention also had no
+> positional encoding, so spatial alignment with SAM's features was lost.
+
+### 4. DINO-FracTAL ResUNet
+- **Architecture**: same U-Net and `GatedFusion`, with a frozen DINO ViT. Patch tokens from three depths
+  (½, ¾ and the last block) feed the three fusion levels: shallower layers carry more local detail, the
+  last layer the most semantics.
+- **Backbone**: the first one of these that loads is used and recorded in the checkpoint:
+  1. `facebook/dinov3-vitl16-pretrain-sat493m`: DINOv3 ViT-L/16 pretrained on satellite imagery
+  2. `facebook/dinov3-vitb16-pretrain-lvd1689m`: DINOv3 ViT-B/16 pretrained on web images
+  3. `facebook/dinov2-with-registers-base`: DINOv2 ViT-B/14 (Apache-2.0, not gated)
+- **DINOv3 access**: the weights are free to use under Meta's DINOv3 License but gated on Hugging Face.
+  Accept the licence on the model page, then add an `HF_TOKEN` secret in Colab. Without it, the notebook
+  falls back to DINOv2 automatically.
+
+### Training changes shared by SAM- and DINO-FracTAL
+- **Instance-aware targets**: boundaries are built from per-field instance ids, so the edge shared by two
+  touching fields is marked. Previously all fields had the same label, so shared edges were never
+  supervised, which was a main cause of merged fields.
+- **Per-field distance target**: 0 on the edge and 1 at each field's centre, whatever its size.
+- **Native-resolution crops**: random 512 crops (±25% scale, 90° rotations and flips) instead of squashing
+  whole images to 512, so training matches the scale of tiled inference.
+  Targets are computed after the geometric transforms.
+- **Thinner boundaries**: boundary BCE `pos_weight` 20 → 3 plus soft Dice; boundary weight in the
+  segmentation CE 12 → 3.
+- **Field-level model selection**: validation runs the full watershed post-processing and matches fields
+  to ground truth (IoU > 0.5). The best checkpoint is chosen on field F1, with early stopping.
+  Boundary F1 uses a 2 px tolerance.
+- **Post-processing tuning + test**: after training, the watershed thresholds are grid-searched on the
+  validation set and stored in `best.pt`, and final metrics are reported on the test split.
+- **Mixed precision**: bf16 on A100/L4, fp16 with a gradient scaler on T4.
 
 ## Training Data
 
@@ -76,6 +113,22 @@ This project provides tools to:
 - **Annotations**: 8,610 field polygons
 
 ## Inference Pipeline
+
+### SAM- / DINO-FracTAL Inference
+
+1. **Tiled inference**: 512 px tiles, 128 px overlap, raised-cosine blending, batched tiles, h/v flip
+   TTA. The image is reflect-padded first, so border pixels are not zeroed.
+2. **Seeded watershed** (as in the FracTAL paper): field cores = high distance, low boundary
+   probability. Flooding `boundary − distance` inside the field extent splits touching fields while
+   each keeps its full extent, so no buffering or NMS is needed.
+3. **Polygons**: `rasterio.features.shapes` traces pixel edges exactly, so neighbouring fields share
+   edges without gaps or overlaps. Coordinates are in the image CRS (area in m² for projected CRSs);
+   non-georeferenced images stay in pixel coordinates with `crs=None`.
+4. **Output**: GeoJSON + visualisation PNG. Thresholds come from the checkpoint (tuned on validation)
+   and can be overridden in `CONFIG['postprocess']`.
+
+> Checkpoints from the previous SAM-FracTAL version (`sam-fractal-resunet-512-v02`) are not compatible
+> with the new architecture. Retrain with the updated notebook (outputs go to `...-v03`).
 
 ### FracTAL ResUNet Tiled Inference
 
@@ -148,14 +201,15 @@ chunk_with_normalization(
 - Ultralytics (for YOLO)
 - rasterio, geopandas (for geospatial I/O)
 - segment-anything (for SAM model)
-- kornia, pycocotools
+- transformers >= 4.56 (for DINOv3 / DINOv2)
+- scikit-image, pycocotools
 
 ### Installation
 ```bash
 pip install torch torchvision
 pip install ultralytics roboflow
 pip install rasterio geopandas
-pip install segment-anything kornia pycocotools
+pip install segment-anything "transformers>=4.56" scikit-image pycocotools
 ```
 
 ## Usage
@@ -191,7 +245,8 @@ gdf, detections = run_cropfield_segmentation(
 | YOLO v1 | `yolo11n-seg-cropfield-v1.pt` | Initial trained model |
 | YOLO v2 | `yolo11n-seg-cropfield-v2.pt` | Optimized inference version |
 | FracTAL | `best.pt` (in notebook output) | Best boundary F1 checkpoint |
-| SAM-FracTAL | `best.pt` (in notebook output) | SAM fusion trained model |
+| SAM-FracTAL | `best.pt` (in notebook output) | SAM fusion trained model (+ model config and tuned post-processing) |
+| DINO-FracTAL | `best.pt` (in notebook output) | DINOv3/DINOv2 fusion trained model (+ backbone name and tuned post-processing) |
 
 ## License
 

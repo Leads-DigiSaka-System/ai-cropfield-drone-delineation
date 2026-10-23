@@ -131,9 +131,22 @@ This project provides tools to:
    become straight edges, and shared edges stay shared (no gaps or overlaps). `smooth_px` (default 6)
    sets the strength. Coordinates are in the image CRS (area in m² for projected CRSs);
    non-georeferenced images stay in pixel coordinates with `crs=None`.
-4. **Output**: GeoJSON (with `n_vertices` per field) + visualisation PNG (downsampled for large images,
-   optional via `save_visualization`). Watershed thresholds come from the checkpoint (tuned on
-   validation) and can be overridden in `CONFIG['postprocess']`.
+4. **Field filters** (`CONFIG['filters']`), measured on the smoothed polygons:
+   - **Circular objects**: there are no circular fields in the Philippine context. A field is removed
+     only if it is round by *both* measures: Polsby-Popper circularity 4πA/P² ≥ 0.90 *and* it fills
+     ≥ 85 % of its smallest enclosing circle. Squares (0.785 / 0.64), compact pentagons and hexagons,
+     ellipses and irregular fields are kept.
+   - **Implausibly small fields**: a field is removed only if its area is < 5 % of the scene's
+     *median* field area, *and* the scene has ≥ 10 fields, *and* it is under 200 m² (georeferenced
+     images), *and* it does not touch the image edge or nodata (such fields are often real but
+     only partly visible).
+   - Removed fields are saved to `<name>_removed_fields.geojson` with a `filter_reason`, and drawn in
+     red in the result image, so every removal can be reviewed. Set `filter_circular` / `filter_small`
+     to `False` to turn a filter off.
+5. **Output**: GeoJSON with `n_vertices`, `circularity`, `circle_fill`, `area_rel` (area / median)
+   and `touches_edge` per field, plus a visualisation PNG (downsampled for large images, optional via
+   `save_visualization`). Watershed thresholds come from the checkpoint (tuned on validation) and can
+   be overridden in `CONFIG['postprocess']`.
 
 Benchmark on a 3000×3000 px synthetic orthomosaic (CPU, 4 cores, small stand-in network, 25% nodata):
 

@@ -116,16 +116,34 @@ This project provides tools to:
 
 ### SAM- / DINO-FracTAL Inference
 
-1. **Tiled inference**: 512 px tiles, 128 px overlap, raised-cosine blending, batched tiles, h/v flip
-   TTA. The image is reflect-padded first, so border pixels are not zeroed.
-2. **Seeded watershed** (as in the FracTAL paper): field cores = high distance, low boundary
-   probability. Flooding `boundary − distance` inside the field extent splits touching fields while
-   each keeps its full extent, so no buffering or NMS is needed.
-3. **Polygons**: `rasterio.features.shapes` traces pixel edges exactly, so neighbouring fields share
-   edges without gaps or overlaps. Coordinates are in the image CRS (area in m² for projected CRSs);
+1. **Tiled inference**: 512 px tiles, 128 px overlap, raised-cosine blending, batched tiles.
+   The image is reflect-padded first, so border pixels are not zeroed. For speed and low CPU load:
+   - tiles with no valid pixels (nodata, alpha or mask) are skipped
+   - normalisation and tile blending run on the GPU
+   - the U-Net uses channels-last memory on GPU
+   - h/v flip TTA is off by default (`tta=True` turns it on, at 3× the compute)
+   - PyTorch/OpenCV threads are capped via `cpu_threads` (default 2 on GPU runtimes)
+2. **Seeded watershed** (as in the FracTAL paper), after a light Gaussian blur of the maps
+   (`smooth_sigma`, 1 px): field cores = high distance, low boundary probability. Flooding
+   `boundary − distance` inside the field extent splits touching fields while each keeps its full extent.
+3. **Polygons**: pixel edges are traced with `rasterio.features.shapes`, small background holes are
+   filled, then all fields are simplified together with `shapely.coverage_simplify`. Pixel staircases
+   become straight edges, and shared edges stay shared (no gaps or overlaps). `smooth_px` (default 6)
+   sets the strength. Coordinates are in the image CRS (area in m² for projected CRSs);
    non-georeferenced images stay in pixel coordinates with `crs=None`.
-4. **Output**: GeoJSON + visualisation PNG. Thresholds come from the checkpoint (tuned on validation)
-   and can be overridden in `CONFIG['postprocess']`.
+4. **Output**: GeoJSON (with `n_vertices` per field) + visualisation PNG (downsampled for large images,
+   optional via `save_visualization`). Watershed thresholds come from the checkpoint (tuned on
+   validation) and can be overridden in `CONFIG['postprocess']`.
+
+Benchmark on a 3000×3000 px synthetic orthomosaic (CPU, 4 cores, small stand-in network, 25% nodata):
+
+| | Before | After |
+|---|---|---|
+| Tiled inference | 135.7 s wall / 476 s CPU | 29.8 s wall / 102 s CPU |
+| Fields (110 true) | 116 | 110 |
+| Vertices per polygon | 211 | 22 |
+| Overlap between neighbouring polygons | 1.41 m² | 0 |
+| IoU with the true field outlines | 0.972 | 0.973 |
 
 > Checkpoints from the previous SAM-FracTAL version (`sam-fractal-resunet-512-v02`) are not compatible
 > with the new architecture. Retrain with the updated notebook (outputs go to `...-v03`).

@@ -126,6 +126,14 @@ This project provides tools to:
 2. **Seeded watershed** (as in the FracTAL paper), after a light Gaussian blur of the maps
    (`smooth_sigma`, 1 px): field cores = high distance, low boundary probability. Flooding
    `boundary − distance` inside the field extent splits touching fields while each keeps its full extent.
+   - **Hysteresis extent** (`extent_low` 0.30 / `extent_thresh` 0.50): a pixel whose field probability
+     dips under a tree, shadow or map label still counts as field when it is connected to confident
+     field pixels; isolated low-probability areas stay background. Validation tuning tries it on and off.
+   - **Hole filling** (`fill_holes='enclosed'`, `hole_max_frac` 0.25): a background patch is filled with
+     its field only if it is enclosed by that one field, doesn't touch the image edge, and is at most
+     25 % of the field's area. Larger enclosed patches (ponds, farmhouse compounds) stay as holes, since
+     they are not crop area. Gaps between fields and rings around a field nested inside another are
+     never filled. `'all'` fills every enclosed hole; `'none'` turns filling off.
 3. **Polygons**: pixel edges are traced with `rasterio.features.shapes`, small background holes are
    filled, then all fields are simplified together with `shapely.coverage_simplify`. Pixel staircases
    become straight edges, and shared edges stay shared (no gaps or overlaps). `smooth_px` (default 6)
